@@ -28,7 +28,7 @@ import {
 	WidgetType,
 } from "@codemirror/view";
 
-
+// TODO: remove contstants
 class Checkbox extends MarkdownRenderChild {
 	checked: boolean;
 	id: number;
@@ -64,8 +64,8 @@ const REGEXP_ANNOTATED_CELL = new RegExp(REGEXP_CELL_START.source + REGEXP_ANNOT
 class CheckboxWidget extends WidgetType {
 	checked: boolean;
 	id: number;
-	onclick: () => void;
-	constructor(id: number, checked: boolean, onclick: () => void) {
+	onclick: (checked: boolean) => void;
+	constructor(id: number, checked: boolean, onclick: (checked: boolean) => void) {
 		super();
 		this.id = id;
 		this.checked = checked;
@@ -76,8 +76,8 @@ class CheckboxWidget extends WidgetType {
 		const input = document.createElement("input");
 		input.type = "checkbox";
 		input.checked = this.checked;
-		input.onclick = this.onclick;
 		input.classList.add(CLASS_NAME);
+		input.onclick = () => this.onclick(input.checked);
 		return input;
 	}
 }
@@ -120,7 +120,6 @@ class VP implements PluginValue {
 							return;
 						}
 
-						console.log(view.state.selection.ranges);
 						builder.add(
 							start_idx,
 							end_idx,
@@ -128,10 +127,17 @@ class VP implements PluginValue {
 								widget: new CheckboxWidget(
 									parseInt(result.groups!.id),
 									result.groups!.check === "x",
-									() => {
-										console.log(
-											view.state.sliceDoc(start_idx + 3, start_idx + 4)
-										)
+									(checked: boolean) => {
+										console.log(checked);
+										view.dispatch(
+											view.state.update({
+												changes: {
+													from: start_idx + 3,
+													to: start_idx + 4,
+													insert: checked ? "x" : " "
+												}
+											})
+										);
 									}
 								),
 							})
