@@ -92,8 +92,9 @@ class VP implements PluginValue {
 	}
 
 	update(update: ViewUpdate) {
+		this.decorations = this.buildDecorations(update.view);
 		if (update.docChanged || update.viewportChanged) {
-			this.decorations = this.buildDecorations(update.view);
+			
 		}
 	}
 
@@ -112,10 +113,14 @@ class VP implements PluginValue {
 						const end_idx = Math.min(view.state.doc.length - 1, node.to + 4);
 						const text = view.state.sliceDoc(start_idx, end_idx);
 						const result = text.match(REGEXP_ANNOTATED);
-						if (!result) {
+						const cursor_start = view.state.selection.main.from;
+						const cursor_end = view.state.selection.main.to;
+						const overlap = !(cursor_start >= end_idx || cursor_end < start_idx);
+						if (!result || overlap) {
 							return;
 						}
 
+						console.log(view.state.selection.ranges);
 						builder.add(
 							start_idx,
 							end_idx,
@@ -124,7 +129,9 @@ class VP implements PluginValue {
 									parseInt(result.groups!.id),
 									result.groups!.check === "x",
 									() => {
-										console.log("clicked");
+										console.log(
+											view.state.sliceDoc(start_idx + 3, start_idx + 4)
+										)
 									}
 								),
 							})
