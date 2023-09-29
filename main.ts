@@ -32,8 +32,8 @@ import {
 class Checkbox extends MarkdownRenderChild {
 	checked: boolean;
 	id: number;
-	onclick: () => void;
-	constructor(containerEl: HTMLElement, id: number, checked: boolean, onclick: () => void) {
+	onclick: (id: number, checked: boolean) => void;
+	constructor(containerEl: HTMLElement, id: number, checked: boolean, onclick: (id: number, checked: boolean) => void) {
 		super(containerEl);
 		this.checked = checked;
 		this.id = id;
@@ -48,7 +48,7 @@ class Checkbox extends MarkdownRenderChild {
 		const input = createEl("input");
 		input.type = "checkbox";
 		input.checked = this.checked;
-		input.onclick = this.onclick;
+		input.onclick = () => this.onclick(this.id, input.checked);
 		input.classList.add(CLASS_NAME);
 		input.dataset.cp_checkbox_id = this.id.toString();
 
@@ -209,7 +209,24 @@ export default class CheckPlease extends Plugin {
 						td,
 						parseInt(result.groups!.id),
 						result.groups!.check === "x",
-						() => {}
+						(id: number, checked: boolean) => {
+							this.app.vault.process(
+								this.app.workspace.getActiveFile()!,
+								doc => {
+									const regexp = new RegExp(
+										REGEXP_CELL_START.source +
+										REGEXP_CHECKBOX.source +
+										"\\{" + id + "\\} "
+									)
+
+									return doc.replace(
+										regexp,
+										`| - [${checked ? "x" : " "}]{${id}} `
+									);
+								}
+							)
+							
+						}
 					)
 				);
 			}
