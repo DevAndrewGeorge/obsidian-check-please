@@ -73,6 +73,11 @@ class Regexer {
 	
 	static regex_annotation = /\{(?<id>[0-9]+)\}/g;
 	
+	static regex_checkbox_annotated = new RegExp(
+		// there should be no unannotated cells in html 
+		Regexer.regex_checkbox.source + Regexer.regex_annotation.source + " ?"
+	);
+
 	static regex_markdown_cell_start = /\| /;
 	
 	static regex_markdown_cell_unannotated = new RegExp(
@@ -81,15 +86,10 @@ class Regexer {
 	static regex_markdown_cell_annotated = new RegExp(
 		Regexer.regex_markdown_cell_start.source + Regexer.regex_checkbox.source + Regexer.regex_annotation.source + " "
 	);
-
-	static regex_html_cell = new RegExp(
-		// there should be no unannotated cells in html 
-		Regexer.regex_markdown_cell_start.source + Regexer.regex_checkbox.source + Regexer.regex_annotation.source + " ?"
-	);
-
-	static parseCheckboxInHtmlContent(content: string): CheckboxState | null {
+	
+	static parseAnnoatedCheckbox(content: string): CheckboxState | null {
 		const result = content.match(
-			new RegExp("^" + Regexer.regex_html_cell.source)
+			new RegExp("^" + Regexer.regex_checkbox_annotated.source)
 		);
 
 		if (!result) {
@@ -104,7 +104,7 @@ class Regexer {
 
 	static removeCheckboxFromHtmlContent(content: string): string {
 		return content.replace(
-			new RegExp("^" + Regexer.regex_html_cell.source),
+			new RegExp("^" + Regexer.regex_checkbox_annotated.source),
 			""
 		);
 	}
@@ -133,28 +133,27 @@ const REGEXP_ANNOTATED = new RegExp(REGEXP_CHECKBOX.source + REGEXP_ANNOTATION.s
 const REGEXP_UNANNOTATED_CELL = new RegExp(REGEXP_CELL_START.source + REGEXP_UNANNOTATED.source);
 const REGEXP_ANNOTATED_CELL = new RegExp(REGEXP_CELL_START.source + REGEXP_ANNOTATED.source);
 
+// TODO: find a way to merge with Checkbox
 class CheckboxWidget extends WidgetType {
-	checked: boolean;
-	id: number;
-	onclick: (checked: boolean) => void;
-	constructor(id: number, checked: boolean, onclick: (checked: boolean) => void) {
+	state: CheckboxState;
+	onclick: CheckboxCallback;
+	constructor(state: CheckboxState, onclick: CheckboxCallback) {
 		super();
-		this.id = id;
-		this.checked = checked;
+		this.state = state;
 		this.onclick = onclick;
 	}
 
 	toDOM() {
 		const input = document.createElement("input");
 		input.type = "checkbox";
-		input.checked = this.checked;
+		input.checked = this.state.checked;
 		input.classList.add(CLASS_NAME);
-		input.onclick = () => this.onclick(input.checked);
+		input.onclick = () => this.onclick({checked: input.checked, id: this.state.id});
 		return input;
 	}
 }
 
-class VP implements PluginValue {
+class CheckPleaseViewPlugin implements PluginValue {
 	checkboxes: Array<{ position: number, checked: boolean }> = [];
 	decorations: DecorationSet;
 	view: EditorView;
@@ -164,30 +163,42 @@ class VP implements PluginValue {
 	}
 
 	update(update: ViewUpdate) {
-		this.decorations = this.buildDecorations(update.view);
+		this.decorations = this.buildDecorations(update.view);	
 		if (update.docChanged || update.viewportChanged) {
 			
 		}
 	}
 
+	annotateCheckboxes() {
+	}
+
 	buildDecorations(view: EditorView) {
 		const builder = new RangeSetBuilder<Decoration>();
-
 		for (let { from, to } of view.visibleRanges) {
 			syntaxTree(view.state).iterate({
 				from,
 				to,
 				enter(node) {
-					if (node.type.name.startsWith("formatting_formatting-link_hmd-barelink_link")) {
+					// console.log(node.type.name)
+					if (node.type.name.startsWith("hmd-table-sep_hmd-table-sep-")) {
+						// TODO: we're assuming all table rows are a single line, is this true?
+						const candidate = view.state.doc.slice(node.from).iterLines().next().value;
+						const result = candidate.match(
+							new RegExp(`^${Regexer.regex_markdown_cell_annotated.source}`)
+						);
 
-						const start_idx = Math.max(0, node.from - 4);
-						const end_idx = Math.min(view.state.doc.length - 1, node.to + 4);
-						const text = view.state.sliceDoc(start_idx, end_idx);
-						const result = text.match(REGEXP_ANNOTATED);
-						const cursor_start = view.state.selection.main.from;
-						const cursor_end = view.state.selection.main.to;
-						const overlap = !(cursor_start >= end_idx || cursor_end < start_idx);
-						if (!result || overlap) {
+						console.log(result);
+						// we do continue if there's no annotated checkbox to decorate
+						if (!result) { 
+							return;
+						}
+
+						const start_idx = node.from + 2; // inclusive location of -
+						const end_idx = node.from + candidate.indexOf("}") + 1; // exclusive location of }
+
+						console.log(start_idx, end_idx);
+						// do not add decoration if cursor/selection overlaps the annotated checkbox
+						if (!(start_idx > view.state.selection.main.to || end_idx < view.state.selection.main.from)) {
 							return;
 						}
 
@@ -196,15 +207,14 @@ class VP implements PluginValue {
 							end_idx,
 							Decoration.replace({
 								widget: new CheckboxWidget(
-									parseInt(result.groups!.id),
-									result.groups!.check === "x",
-									(checked: boolean) => {
+									{ id: parseInt(result.groups!.id), checked: result.groups!.check === "x" },
+									(state: CheckboxState) => {
 										view.dispatch(
 											view.state.update({
 												changes: {
 													from: start_idx + 3,
 													to: start_idx + 4,
-													insert: checked ? "x" : " "
+													insert: state.checked ? "x" : " "
 												}
 											})
 										);
@@ -234,10 +244,13 @@ function enumerate(doc: string): string {
 
 export default class CheckPlease extends Plugin {
 	onload() {
-		this.registerEditorExtension([ViewPlugin.fromClass(
-			VP,
-			{ decorations: (value: VP) => value.decorations }
-		)]);
+		this.registerEditorExtension([
+			ViewPlugin.fromClass(
+				CheckPleaseViewPlugin,
+				{ decorations: (value: CheckPleaseViewPlugin) => value.decorations }
+			)
+		]);
+
 		this.registerMarkdownPostProcessor(this.postProcessMarkdown.bind(this));
 
 		// TODO: edit file from view plugin
@@ -254,7 +267,7 @@ export default class CheckPlease extends Plugin {
 	postProcessMarkdown(element: HTMLElement, context: MarkdownPostProcessorContext) {
 		element.querySelectorAll("td").forEach(
 			(td: HTMLTableCellElement) => {
-				const checkbox = Regexer.parseCheckboxInHtmlContent(td.innerText);
+				const checkbox = Regexer.parseAnnoatedCheckbox(td.innerText);
 				if (!checkbox) {
 					return;
 				}
