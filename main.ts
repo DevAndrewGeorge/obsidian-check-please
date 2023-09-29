@@ -41,14 +41,28 @@ class Checkbox extends MarkdownRenderChild {
 	}
 
 	onload() {
+		//
+		const span_container = createEl("span");
+
+		//
 		const input = createEl("input");
 		input.type = "checkbox";
 		input.checked = this.checked;
 		input.onclick = this.onclick;
 		input.classList.add(CLASS_NAME);
 		input.dataset.cp_checkbox_id = this.id.toString();
+
+		// 
+		const span_inner = createEl("span");
+		span_inner.textContent = this.containerEl.textContent?.replace(
+			new RegExp(REGEXP_ANNOTATED.source.trimEnd()),
+			""
+		) || "";
+
+		span_container.appendChild(input);
+		span_container.appendChild(span_inner);
 		this.containerEl.textContent = "";
-		this.containerEl.appendChild(input);
+		this.containerEl.appendChild(span_container);
 	}
 }
 
@@ -106,7 +120,6 @@ class VP implements PluginValue {
 				from,
 				to,
 				enter(node) {
-					// console.log(node.type.name);
 					if (node.type.name.startsWith("formatting_formatting-link_hmd-barelink_link")) {
 						// Position of the '-' or the '*'.
 						const start_idx = Math.max(0, node.from - 4);
@@ -128,7 +141,6 @@ class VP implements PluginValue {
 									parseInt(result.groups!.id),
 									result.groups!.check === "x",
 									(checked: boolean) => {
-										console.log(checked);
 										view.dispatch(
 											view.state.update({
 												changes: {
@@ -168,7 +180,7 @@ export default class CheckPlease extends Plugin {
 			VP,
 			{ decorations: (value: VP) => value.decorations }
 		)]);
-		// this.registerMarkdownPostProcessor(this.postProcessMarkdown.bind(this));
+		this.registerMarkdownPostProcessor(this.postProcessMarkdown.bind(this));
 
 		this.registerEvent(
 			this.app.vault.on(
@@ -183,8 +195,11 @@ export default class CheckPlease extends Plugin {
 	postProcessMarkdown(element: HTMLElement, context: MarkdownPostProcessorContext) {
 		element.querySelectorAll("td").forEach(
 			(td: HTMLTableCellElement) => {
-				const text = td.textContent || "";
-				const result = text.match("^" + REGEXP_ANNOTATED_CELL);
+				const text = td.textContent?.trim() || "";
+				const result = text.match(
+					new RegExp("^" + REGEXP_ANNOTATED.source.trimEnd())
+				);
+
 				if (!result) {
 					return;
 				}
@@ -193,7 +208,8 @@ export default class CheckPlease extends Plugin {
 					new Checkbox(
 						td,
 						parseInt(result.groups!.id),
-						result.groups!.check === "x"
+						result.groups!.check === "x",
+						() => {}
 					)
 				);
 			}
