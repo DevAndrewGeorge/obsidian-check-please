@@ -2,14 +2,10 @@ import {
 	MarkdownPostProcessorContext,
 	MarkdownRenderChild,
 	Plugin,
-	TAbstractFile,
 	TFile
 } from "obsidian";
 
 import {
-	EditorState,
-	Transaction,
-	StateField,
 	RangeSetBuilder
 } from "@codemirror/state";
 
@@ -21,44 +17,46 @@ import {
 	Decoration,
 	DecorationSet,
 	EditorView,
-	PluginSpec,
 	PluginValue,
 	ViewPlugin,
 	ViewUpdate,
 	WidgetType,
 } from "@codemirror/view";
 
+type CheckboxState = {
+	id: number,
+	checked: boolean
+}
+
+type CheckboxCallback = (state: CheckboxState) => void;
+
 // TODO: remove contstants
 class Checkbox extends MarkdownRenderChild {
-	checked: boolean;
-	id: number;
-	onclick: (id: number, checked: boolean) => void;
-	constructor(containerEl: HTMLElement, id: number, checked: boolean, onclick: (id: number, checked: boolean) => void) {
+	state: CheckboxState;
+	onclick: CheckboxCallback;
+	constructor(containerEl: HTMLElement, state: CheckboxState, onclick: CheckboxCallback) {
 		super(containerEl);
-		this.checked = checked;
-		this.id = id;
+		this.state = state;
 		this.onclick = onclick;
 	}
 
 	onload() {
-		//
+		// wrapper element to container checkbox followed by remaining content
 		const span_container = createEl("span");
 
-		//
+		// checkbox
 		const input = createEl("input");
 		input.type = "checkbox";
-		input.checked = this.checked;
-		input.onclick = () => this.onclick(this.id, input.checked);
+		input.checked = this.state.checked;
 		input.classList.add(CLASS_NAME);
-		input.dataset.cp_checkbox_id = this.id.toString();
+		input.dataset.cp_id = this.state.id.toString();
+		input.onclick = () => this.onclick({checked: input.checked, id: this.state.id});
 
-		// 
+		// remaining content
 		const span_inner = createEl("span");
-		span_inner.textContent = this.containerEl.textContent?.replace(
-			new RegExp(REGEXP_ANNOTATED.source.trimEnd()),
-			""
-		) || "";
+		span_inner.textContent = Regexer.removeCheckboxFromHtmlContent(this.containerEl.textContent || "");
 
+		// apply new content
 		span_container.appendChild(input);
 		span_container.appendChild(span_inner);
 		this.containerEl.textContent = "";
@@ -66,7 +64,67 @@ class Checkbox extends MarkdownRenderChild {
 	}
 }
 
+
 const CLASS_NAME = "cp-checkbox";
+
+// TODO: turn all regex into class
+class Regexer {
+	static regex_checkbox = /- \[(?<check>[ x])\]/g;
+	
+	static regex_annotation = /\{(?<id>[0-9]+)\}/g;
+	
+	static regex_markdown_cell_start = /\| /;
+	
+	static regex_markdown_cell_unannotated = new RegExp(
+		Regexer.regex_markdown_cell_start.source + Regexer.regex_checkbox.source + " "
+	);
+	static regex_markdown_cell_annotated = new RegExp(
+		Regexer.regex_markdown_cell_start.source + Regexer.regex_checkbox.source + Regexer.regex_annotation.source + " "
+	);
+
+	static regex_html_cell = new RegExp(
+		// there should be no unannotated cells in html 
+		Regexer.regex_markdown_cell_start.source + Regexer.regex_checkbox.source + Regexer.regex_annotation.source + " ?"
+	);
+
+	static parseCheckboxInHtmlContent(content: string): CheckboxState | null {
+		const result = content.match(
+			new RegExp("^" + Regexer.regex_html_cell.source)
+		);
+
+		if (!result) {
+			return null;
+		}
+
+		return {
+			id: parseInt(result.groups!.id),
+			checked: result.groups!.check === "x"
+		};
+	}
+
+	static removeCheckboxFromHtmlContent(content: string): string {
+		return content.replace(
+			new RegExp("^" + Regexer.regex_html_cell.source),
+			""
+		);
+	}
+
+	static updateCheckboxInMarkdownContent(document: string, state_new: CheckboxState): string {
+		const regex = new RegExp(
+			Regexer.regex_markdown_cell_start.source +
+			Regexer.regex_checkbox.source +
+			`\{${state_new.id}\} `
+		);
+
+		return document.replace(regex, match => {
+			return match.replace(
+				Regexer.regex_checkbox,
+				state_new.checked ? "- [x]" : "- [ ]"
+			);
+		});
+
+	}
+}
 const REGEXP_CHECKBOX = /- \[(?<check>[ x])\]/g
 const REGEXP_ANNOTATION = /\{(?<id>[0-9]+)\}/g
 const REGEXP_CELL_START = /\| /;
@@ -121,7 +179,7 @@ class VP implements PluginValue {
 				to,
 				enter(node) {
 					if (node.type.name.startsWith("formatting_formatting-link_hmd-barelink_link")) {
-						// Position of the '-' or the '*'.
+
 						const start_idx = Math.max(0, node.from - 4);
 						const end_idx = Math.min(view.state.doc.length - 1, node.to + 4);
 						const text = view.state.sliceDoc(start_idx, end_idx);
@@ -182,6 +240,7 @@ export default class CheckPlease extends Plugin {
 		)]);
 		this.registerMarkdownPostProcessor(this.postProcessMarkdown.bind(this));
 
+		// TODO: edit file from view plugin
 		this.registerEvent(
 			this.app.vault.on(
 				"modify",
@@ -195,35 +254,19 @@ export default class CheckPlease extends Plugin {
 	postProcessMarkdown(element: HTMLElement, context: MarkdownPostProcessorContext) {
 		element.querySelectorAll("td").forEach(
 			(td: HTMLTableCellElement) => {
-				const text = td.textContent?.trim() || "";
-				const result = text.match(
-					new RegExp("^" + REGEXP_ANNOTATED.source.trimEnd())
-				);
-
-				if (!result) {
+				const checkbox = Regexer.parseCheckboxInHtmlContent(td.innerText);
+				if (!checkbox) {
 					return;
 				}
 
 				context.addChild(
 					new Checkbox(
 						td,
-						parseInt(result.groups!.id),
-						result.groups!.check === "x",
-						(id: number, checked: boolean) => {
+						{ id: checkbox.id, checked: checkbox.checked },
+						(state_new: CheckboxState) => {
 							this.app.vault.process(
 								this.app.workspace.getActiveFile()!,
-								doc => {
-									const regexp = new RegExp(
-										REGEXP_CELL_START.source +
-										REGEXP_CHECKBOX.source +
-										"\\{" + id + "\\} "
-									)
-
-									return doc.replace(
-										regexp,
-										`| - [${checked ? "x" : " "}]{${id}} `
-									);
-								}
+								document => Regexer.updateCheckboxInMarkdownContent(document, state_new)
 							)
 							
 						}
