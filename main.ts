@@ -1,12 +1,17 @@
 import {
+	Editor,
+	MarkdownFileInfo,
 	MarkdownPostProcessorContext,
 	MarkdownRenderChild,
 	Plugin,
-	TFile
+	TFile,
+	MarkdownView,
+	EditorChange
 } from "obsidian";
 
 import {
-	RangeSetBuilder
+	RangeSetBuilder,
+	TransactionSpec
 } from "@codemirror/state";
 
 import {
@@ -113,10 +118,13 @@ class Regexer {
 		const regex = new RegExp(
 			Regexer.regex_markdown_cell_start.source +
 			Regexer.regex_checkbox.source +
-			`\{${state_new.id}\} `
+			`\\{${state_new.id}\\} `
 		);
 
+		console.log(regex.source);
+
 		return document.replace(regex, match => {
+			console.log(match);
 			return match.replace(
 				Regexer.regex_checkbox,
 				state_new.checked ? "- [x]" : "- [ ]"
@@ -125,13 +133,6 @@ class Regexer {
 
 	}
 }
-const REGEXP_CHECKBOX = /- \[(?<check>[ x])\]/g
-const REGEXP_ANNOTATION = /\{(?<id>[0-9]+)\}/g
-const REGEXP_CELL_START = /\| /;
-const REGEXP_UNANNOTATED = new RegExp(REGEXP_CHECKBOX.source + " ");
-const REGEXP_ANNOTATED = new RegExp(REGEXP_CHECKBOX.source + REGEXP_ANNOTATION.source + " ");
-const REGEXP_UNANNOTATED_CELL = new RegExp(REGEXP_CELL_START.source + REGEXP_UNANNOTATED.source);
-const REGEXP_ANNOTATED_CELL = new RegExp(REGEXP_CELL_START.source + REGEXP_ANNOTATED.source);
 
 // TODO: find a way to merge with Checkbox
 class CheckboxWidget extends WidgetType {
@@ -163,13 +164,54 @@ class CheckPleaseViewPlugin implements PluginValue {
 	}
 
 	update(update: ViewUpdate) {
-		this.decorations = this.buildDecorations(update.view);	
-		if (update.docChanged || update.viewportChanged) {
-			
+		if (update.docChanged || update.viewportChanged || update.selectionSet) {
+			this.decorations = this.buildDecorations(update.view);
 		}
 	}
 
-	annotateCheckboxes() {
+	static annotateCheckboxes(editor: Editor, view: EditorView) {
+		let id = 0;
+		const changes: EditorChange[] = [];
+		syntaxTree(view.state).iterate({
+			from: 0,
+			enter(node) {
+				if (!node.type.name.startsWith("hmd-table-sep_hmd-table-sep-")) {
+					return;
+				}
+
+				const candidate = view.state.doc.slice(node.from).iterLines().next().value;
+				const result_annotated = candidate.match(
+					new RegExp(`^${Regexer.regex_markdown_cell_annotated.source}`)
+				);
+
+				const result_unannotated = candidate.match(
+					new RegExp(`^${Regexer.regex_markdown_cell_unannotated.source}`)
+				);
+				
+				// no checkbox to annotate
+				if (!result_annotated && !result_unannotated) {
+					return;
+				}
+
+				// no update needed
+				if (result_annotated && result_annotated.groups!.id === id.toString()) {
+					id++;
+					return;
+				}
+
+				changes.push({
+					from: editor.offsetToPos(node.from + 7),
+					to: editor.offsetToPos(
+						result_annotated ? node.from + candidate.indexOf("}") + 1 : node.from + 7
+					),
+					text: `{${id++}}`
+				});
+			}
+		});
+
+		editor.transaction({
+			changes: changes
+		});
 	}
 
 	buildDecorations(view: EditorView) {
@@ -179,7 +221,6 @@ class CheckPleaseViewPlugin implements PluginValue {
 				from,
 				to,
 				enter(node) {
-					// console.log(node.type.name)
 					if (node.type.name.startsWith("hmd-table-sep_hmd-table-sep-")) {
 						// TODO: we're assuming all table rows are a single line, is this true?
 						const candidate = view.state.doc.slice(node.from).iterLines().next().value;
@@ -187,8 +228,7 @@ class CheckPleaseViewPlugin implements PluginValue {
 							new RegExp(`^${Regexer.regex_markdown_cell_annotated.source}`)
 						);
 
-						console.log(result);
-						// we do continue if there's no annotated checkbox to decorate
+						// we don't continue if there's no annotated checkbox to decorate
 						if (!result) { 
 							return;
 						}
@@ -196,7 +236,6 @@ class CheckPleaseViewPlugin implements PluginValue {
 						const start_idx = node.from + 2; // inclusive location of -
 						const end_idx = node.from + candidate.indexOf("}") + 1; // exclusive location of }
 
-						console.log(start_idx, end_idx);
 						// do not add decoration if cursor/selection overlaps the annotated checkbox
 						if (!(start_idx > view.state.selection.main.to || end_idx < view.state.selection.main.from)) {
 							return;
@@ -231,36 +270,62 @@ class CheckPleaseViewPlugin implements PluginValue {
 	}
 }
 
-function enumerate(doc: string): string {
-	let id = 0;
-	return doc.replaceAll(
-		new RegExp(REGEXP_ANNOTATED_CELL.source, "g"),
-		match => match.trimEnd().replace(REGEXP_ANNOTATION, "") + "{" + id++ + "} "
-	).replaceAll(
-		new RegExp(REGEXP_UNANNOTATED_CELL, "g"),
-		match => match.trimEnd() + "{" + id++ + "} "
-	);
-}
-
 export default class CheckPlease extends Plugin {
 	onload() {
 		this.registerEditorExtension([
 			ViewPlugin.fromClass(
 				CheckPleaseViewPlugin,
-				{ decorations: (value: CheckPleaseViewPlugin) => value.decorations }
+				{
+					decorations: (value: CheckPleaseViewPlugin) => value.decorations
+				}
 			)
 		]);
 
-		this.registerMarkdownPostProcessor(this.postProcessMarkdown.bind(this));
-
-		// TODO: edit file from view plugin
 		this.registerEvent(
-			this.app.vault.on(
-				"modify",
+			this.app.workspace.on(
+				"file-open",
 				(file: TFile) => {
-					this.app.vault.process(file, doc => enumerate(doc))
+					// do nothing if not editing a markdown file
+					if (!file || file.extension !== "md") {
+						return;
+					}
+
+					const editor = this.app.workspace.activeEditor?.editor;
+					if (!editor) {
+						return;
+					}
+
+					// @ts-expect-error, not typed
+					const cm = editor.cm as EditorView;
+					CheckPleaseViewPlugin.annotateCheckboxes(
+						editor,
+						cm
+					);
+
+					// TODO: this is a hack because editor changes aren't persisted to file
+					this.app.vault.process(
+						file,
+						(_: string) => cm.state.doc.toString()
+					);
 				}
 			)
+		)
+		this.registerEvent(
+			this.app.workspace.on(
+				"editor-change",
+				(_: Editor, info: MarkdownView) => {
+					CheckPleaseViewPlugin.annotateCheckboxes(
+						info.editor,
+						// @ts-expect-error, not typed
+						info.editor.cm as EditorView
+					);
+				}
+			)		
+		);
+
+
+		this.registerMarkdownPostProcessor(
+			this.postProcessMarkdown.bind(this)
 		);
 	}
 
@@ -281,7 +346,6 @@ export default class CheckPlease extends Plugin {
 								this.app.workspace.getActiveFile()!,
 								document => Regexer.updateCheckboxInMarkdownContent(document, state_new)
 							)
-							
 						}
 					)
 				);
