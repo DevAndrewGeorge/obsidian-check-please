@@ -1,6 +1,5 @@
 import {
 	Editor,
-	MarkdownFileInfo,
 	MarkdownPostProcessorContext,
 	MarkdownRenderChild,
 	Plugin,
@@ -10,8 +9,7 @@ import {
 } from "obsidian";
 
 import {
-	RangeSetBuilder,
-	TransactionSpec
+	RangeSetBuilder
 } from "@codemirror/state";
 
 import {
@@ -74,22 +72,28 @@ const CLASS_NAME = "cp-checkbox";
 
 // TODO: turn all regex into class
 class Regexer {
+	static checkbox_checked = "- [x]";
+	static checkbox_unchecked = "- [ ]";
 	static regex_checkbox = /- \[(?<check>[ x])\]/g;
 	
 	static regex_annotation = /\{(?<id>[0-9]+)\}/g;
 	
 	static regex_checkbox_annotated = new RegExp(
 		// there should be no unannotated cells in html 
-		Regexer.regex_checkbox.source + Regexer.regex_annotation.source + " ?"
+		Regexer.regex_checkbox.source +
+		Regexer.regex_annotation.source +
+		"($| .*)"
 	);
 
-	static regex_markdown_cell_start = /\| /;
-	
-	static regex_markdown_cell_unannotated = new RegExp(
-		Regexer.regex_markdown_cell_start.source + Regexer.regex_checkbox.source + " "
-	);
-	static regex_markdown_cell_annotated = new RegExp(
-		Regexer.regex_markdown_cell_start.source + Regexer.regex_checkbox.source + Regexer.regex_annotation.source + " "
+	static regex_markdown_cell_start = /\| */;
+
+	static regex_post_checkbox = /( +|\||$)/;
+	static regex_markdown_cell = new RegExp(
+		Regexer.regex_markdown_cell_start.source +
+		Regexer.regex_checkbox.source +
+		"(" + Regexer.regex_annotation.source + ")?" +
+		this.regex_post_checkbox.source
+		
 	);
 	
 	static parseAnnoatedCheckbox(content: string): CheckboxState | null {
@@ -118,16 +122,14 @@ class Regexer {
 		const regex = new RegExp(
 			Regexer.regex_markdown_cell_start.source +
 			Regexer.regex_checkbox.source +
-			`\\{${state_new.id}\\} `
+			`\\{${state_new.id}\\}` +
+			Regexer.regex_post_checkbox.source
 		);
 
-		console.log(regex.source);
-
 		return document.replace(regex, match => {
-			console.log(match);
 			return match.replace(
 				Regexer.regex_checkbox,
-				state_new.checked ? "- [x]" : "- [ ]"
+				state_new.checked ? Regexer.checkbox_checked : Regexer.checkbox_unchecked
 			);
 		});
 
@@ -172,40 +174,44 @@ class CheckPleaseViewPlugin implements PluginValue {
 	static annotateCheckboxes(editor: Editor, view: EditorView) {
 		let id = 0;
 		const changes: EditorChange[] = [];
+
 		syntaxTree(view.state).iterate({
 			from: 0,
 			enter(node) {
+				// nothing to do if we're not in a table
 				if (!node.type.name.startsWith("hmd-table-sep_hmd-table-sep-")) {
 					return;
 				}
 
 				const candidate = view.state.doc.slice(node.from).iterLines().next().value;
-				const result_annotated = candidate.match(
-					new RegExp(`^${Regexer.regex_markdown_cell_annotated.source}`)
-				);
 
-				const result_unannotated = candidate.match(
-					new RegExp(`^${Regexer.regex_markdown_cell_unannotated.source}`)
-				);
-				
+
+				const result = candidate.match(new RegExp(`^${Regexer.regex_markdown_cell.source}`));
+
 				// no checkbox to annotate
-				if (!result_annotated && !result_unannotated) {
+				if (!result) {
 					return;
 				}
 
-				// no update needed
-				if (result_annotated && result_annotated.groups!.id === id.toString()) {
+				// no change needed if the existing annotation is already correct
+				if (result.groups!.id === id.toString()) { 
 					id++;
 					return;
 				}
 
+				const annotation_start_idx = node.from + candidate.indexOf("-") + Regexer.checkbox_checked.length;
+				const annotation_text = `{${id++}}`;
+
 				changes.push({
-					from: editor.offsetToPos(node.from + 7),
-					to: editor.offsetToPos(
-						result_annotated ? node.from + candidate.indexOf("}") + 1 : node.from + 7
+					from: editor.offsetToPos(
+						annotation_start_idx
 					),
-					text: `{${id++}}`
-				});
+					to: editor.offsetToPos(
+						// +1 to include the closing "}" since the "to" value is exclusive
+						result.groups!.id ? node.from + candidate.indexOf("}") + 1 : annotation_start_idx
+					),
+					text: annotation_text
+				});	
 			}
 		});
 
@@ -223,18 +229,17 @@ class CheckPleaseViewPlugin implements PluginValue {
 				enter(node) {
 					if (node.type.name.startsWith("hmd-table-sep_hmd-table-sep-")) {
 						// TODO: we're assuming all table rows are a single line, is this true?
-						const candidate = view.state.doc.slice(node.from).iterLines().next().value;
-						const result = candidate.match(
-							new RegExp(`^${Regexer.regex_markdown_cell_annotated.source}`)
-						);
+						let candidate = view.state.doc.slice(node.from).iterLines().next().value;
+
+						const result = candidate.match(new RegExp(`^${Regexer.regex_markdown_cell.source}`));
 
 						// we don't continue if there's no annotated checkbox to decorate
-						if (!result) { 
+						if (!result || result.groups!.id === undefined) { 
 							return;
 						}
 
-						const start_idx = node.from + 2; // inclusive location of -
-						const end_idx = node.from + candidate.indexOf("}") + 1; // exclusive location of }
+						const start_idx = node.from + candidate.indexOf("-"); // inclusive location of -
+						const end_idx = node.from + candidate.indexOf("}") + 1; // +1 to include the closing "}" since the ending index is exclusive
 
 						// do not add decoration if cursor/selection overlaps the annotated checkbox
 						if (!(start_idx > view.state.selection.main.to || end_idx < view.state.selection.main.from)) {
