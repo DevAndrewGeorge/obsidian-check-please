@@ -33,7 +33,6 @@ type CheckboxState = {
 
 type CheckboxCallback = (state: CheckboxState) => void;
 
-// TODO: remove contstants
 class Checkbox extends MarkdownRenderChild {
 	state: CheckboxState;
 	onclick: CheckboxCallback;
@@ -70,7 +69,6 @@ class Checkbox extends MarkdownRenderChild {
 
 const CLASS_NAME = "cp-checkbox";
 
-// TODO: turn all regex into class
 class Regexer {
 	static checkbox_checked = "- [x]";
 	static checkbox_unchecked = "- [ ]";
