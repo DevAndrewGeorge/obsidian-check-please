@@ -1,7 +1,7 @@
 {
 	"id": "check-please",
 	"name": "Check, Please!",
-	"version": "0.1.0",
+	"version": "1.0.0",
 	"minAppVersion": "1.4.13",
 	"description": "Check, please! adds support for stateful checkboxes within tables.",
 	"author": "Andrew George",
